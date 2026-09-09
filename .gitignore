@@ -1,0 +1,26 @@
+# ROS2 generated files
+build/
+install/
+log/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
+
+# ROS bag files
+*.db3
+*.mcap
+
+# Python virtual environment
+.venv/
+venv/
+
+# OS files
+.DS_Store
+
+# NCNN test outputs
+ncnn_test_output/
+ncnn_test_outputs/
