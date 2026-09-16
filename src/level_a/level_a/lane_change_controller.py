@@ -19,7 +19,7 @@ class LaneChangeController(Node):
         /level_a/target_side
 
     發布：
-        /level_a/cmd_vel_raw
+        /level_a/lane_cmd_vel
         /level_a/lane_change_status
 
     target_side 可使用：
@@ -55,7 +55,7 @@ class LaneChangeController(Node):
         )
         self.declare_parameter(
             'cmd_vel_raw_topic',
-            '/level_a/cmd_vel_raw'
+            '/level_a/lane_cmd_vel'
         )
         self.declare_parameter(
             'status_topic',
@@ -387,12 +387,17 @@ class LaneChangeController(Node):
             )
             return
 
-        if requested_target != self.target_side:
-            self.get_logger().info(
-                f'target_side：'
-                f'{self.target_side} → '
-                f'{requested_target}'
-            )
+        # Mission會定期重發目前target，確保較晚啟動或重新連線的
+        # controller也能取得最新命令。相同target不可重設settle_count，
+        # 否則控制器將永遠無法累積到HOLDING。
+        if requested_target == self.target_side:
+            return
+
+        self.get_logger().info(
+            f'target_side：'
+            f'{self.target_side} → '
+            f'{requested_target}'
+        )
 
         self.target_side = requested_target
         self.settle_count = 0

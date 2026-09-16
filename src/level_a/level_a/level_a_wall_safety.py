@@ -6,6 +6,7 @@ from typing import Optional
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool
 from std_msgs.msg import Float32MultiArray
 from std_msgs.msg import String
@@ -13,20 +14,21 @@ from std_msgs.msg import String
 
 class LevelAWallSafety(Node):
     """
-    第一关隔板安全监督节点。
+    Level A mode-aware safety supervisor.
 
     订阅：
         /level_a/cmd_vel_raw
         /level_a/lane_geometry
+        /level_a/motion_mode
+        /scan
 
     发布：
         /cmd_vel
         /level_a/emergency_stop
         /level_a/safety_status
 
-    注意：
-        目前只检查LiDAR隔板资料。
-        LiDAR看不到猪，因此之后必须加入D435猪只安全判断。
+    LANE模式使用擬合後的走道牆面淨空；U_TURN模式不要求兩側
+    走道同時存在，改用原始LaserScan計算車體矩形外圍淨空。
     """
 
     def __init__(self):
@@ -44,6 +46,14 @@ class LevelAWallSafety(Node):
         self.declare_parameter(
             'lane_geometry_topic',
             '/level_a/lane_geometry'
+        )
+        self.declare_parameter(
+            'motion_mode_topic',
+            '/level_a/motion_mode'
+        )
+        self.declare_parameter(
+            'scan_topic',
+            '/scan'
         )
 
         # 车体尺寸
@@ -69,6 +79,41 @@ class LevelAWallSafety(Node):
         self.declare_parameter(
             'turn_block_clearance_m',
             0.020
+        )
+
+        # U彎時的原始LiDAR安全包絡。scan點會先轉換到base_link，
+        # 再計算它與車體矩形外框之間的最短距離。
+        self.declare_parameter(
+            'u_turn_hard_clearance_m',
+            0.030
+        )
+        self.declare_parameter(
+            'u_turn_warning_clearance_m',
+            0.100
+        )
+        self.declare_parameter(
+            'lidar_x_offset_m',
+            0.1375
+        )
+        self.declare_parameter(
+            'lidar_y_offset_m',
+            0.0
+        )
+        self.declare_parameter(
+            'lidar_yaw_offset_rad',
+            0.0
+        )
+        self.declare_parameter(
+            'self_filter_inset_m',
+            0.015
+        )
+        self.declare_parameter(
+            'maximum_safety_scan_range_m',
+            2.0
+        )
+        self.declare_parameter(
+            'minimum_scan_points',
+            8
         )
 
         # 與lane_change_controller使用相同的航向零點補償
@@ -100,6 +145,14 @@ class LevelAWallSafety(Node):
             'command_timeout_s',
             0.30
         )
+        self.declare_parameter(
+            'mode_timeout_s',
+            0.75
+        )
+        self.declare_parameter(
+            'scan_timeout_s',
+            0.50
+        )
 
         # 发布频率
         self.declare_parameter(
@@ -117,6 +170,12 @@ class LevelAWallSafety(Node):
             self.get_parameter(
                 'lane_geometry_topic'
             ).value
+        )
+        self.motion_mode_topic = str(
+            self.get_parameter('motion_mode_topic').value
+        )
+        self.scan_topic = str(
+            self.get_parameter('scan_topic').value
         )
 
         self.vehicle_width = float(
@@ -143,23 +202,36 @@ class LevelAWallSafety(Node):
             ).value
         )
 
+        self.u_turn_hard_clearance = float(
+            self.get_parameter('u_turn_hard_clearance_m').value
+        )
+        self.u_turn_warning_clearance = float(
+            self.get_parameter('u_turn_warning_clearance_m').value
+        )
+        self.lidar_x_offset = float(
+            self.get_parameter('lidar_x_offset_m').value
+        )
+        self.lidar_y_offset = float(
+            self.get_parameter('lidar_y_offset_m').value
+        )
+        self.lidar_yaw_offset = float(
+            self.get_parameter('lidar_yaw_offset_rad').value
+        )
+        self.self_filter_inset = float(
+            self.get_parameter('self_filter_inset_m').value
+        )
+        self.maximum_safety_scan_range = float(
+            self.get_parameter('maximum_safety_scan_range_m').value
+        )
+        self.minimum_scan_points = int(
+            self.get_parameter('minimum_scan_points').value
+        )
+
         self.heading_bias = float(
             self.get_parameter(
                 'heading_bias_rad'
          ).value
         )
-
-        if not (
-            self.hard_clearance
-            < self.turn_block_clearance
-            < self.warning_clearance
-        ):
-            raise ValueError(
-             '距离必须满足：'
-             'hard_clearance '
-             '< turn_block_clearance '
-                '< warning_clearance'
-            )
 
         self.maximum_forward_speed = float(
             self.get_parameter(
@@ -185,15 +257,28 @@ class LevelAWallSafety(Node):
                 'command_timeout_s'
             ).value
         )
+        self.mode_timeout = float(
+            self.get_parameter('mode_timeout_s').value
+        )
+        self.scan_timeout = float(
+            self.get_parameter('scan_timeout_s').value
+        )
 
         control_rate = float(
             self.get_parameter('control_rate_hz').value
         )
 
+        self.validate_parameters(control_rate)
+
         # 最近一次原始速度命令
         self.raw_linear_x = 0.0
         self.raw_angular_z = 0.0
+        self.raw_command_valid = False
         self.last_command_time = None
+
+        # motion_mode必須由任務管理器持續發布heartbeat。
+        self.motion_mode = 'STOP'
+        self.last_mode_time = None
 
         # 最近一次墙面资料
         self.geometry_valid = False
@@ -205,6 +290,12 @@ class LevelAWallSafety(Node):
         self.heading_error = math.nan
 
         self.last_lane_time = None
+
+        # U彎期間直接由LaserScan計算車體外框淨空。
+        self.minimum_scan_clearance = math.inf
+        self.valid_scan_points = 0
+        self.scan_valid = False
+        self.last_scan_time = None
 
         self.last_status: Optional[str] = None
 
@@ -240,6 +331,20 @@ class LevelAWallSafety(Node):
             10
         )
 
+        self.mode_sub = self.create_subscription(
+            String,
+            self.motion_mode_topic,
+            self.motion_mode_callback,
+            10
+        )
+
+        self.scan_sub = self.create_subscription(
+            LaserScan,
+            self.scan_topic,
+            self.scan_callback,
+            10
+        )
+
         timer_period = 1.0 / max(
             control_rate,
             1.0
@@ -254,18 +359,175 @@ class LevelAWallSafety(Node):
             'Level A wall safety started. '
             f'Input command={self.raw_cmd_topic}, '
             f'output command={self.safe_cmd_topic}, '
-            f'lane={self.lane_geometry_topic}'
+            f'lane={self.lane_geometry_topic}, '
+            f'scan={self.scan_topic}, '
+            f'mode={self.motion_mode_topic}'
         )
+
+    def validate_parameters(self, control_rate: float) -> None:
+        if not (
+            math.isfinite(self.hard_clearance)
+            and math.isfinite(self.turn_block_clearance)
+            and math.isfinite(self.warning_clearance)
+            and 0.0 <= self.hard_clearance
+            < self.turn_block_clearance
+            < self.warning_clearance
+        ):
+            raise ValueError(
+                'lane clearances must satisfy 0 <= hard < turn_block < warning'
+            )
+        if not (
+            math.isfinite(self.u_turn_hard_clearance)
+            and math.isfinite(self.u_turn_warning_clearance)
+            and 0.0 <= self.u_turn_hard_clearance
+            < self.u_turn_warning_clearance
+        ):
+            raise ValueError(
+                'U-turn clearances must satisfy 0 <= hard < warning'
+            )
+
+        positive_values = {
+            'vehicle_width_m': self.vehicle_width,
+            'vehicle_total_length_m': self.vehicle_total_length,
+            'maximum_forward_speed_mps': self.maximum_forward_speed,
+            'maximum_angular_speed_radps': self.maximum_angular_speed,
+            'lane_timeout_s': self.lane_timeout,
+            'command_timeout_s': self.command_timeout,
+            'mode_timeout_s': self.mode_timeout,
+            'scan_timeout_s': self.scan_timeout,
+            'maximum_safety_scan_range_m': self.maximum_safety_scan_range,
+            'control_rate_hz': control_rate,
+        }
+        for name, value in positive_values.items():
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f'{name} must be finite and greater than zero')
+        if (
+            not math.isfinite(self.maximum_reverse_speed)
+            or self.maximum_reverse_speed < 0.0
+        ):
+            raise ValueError(
+                'maximum_reverse_speed_mps must be finite and non-negative'
+            )
+        if not math.isfinite(self.self_filter_inset) or self.self_filter_inset < 0.0:
+            raise ValueError('self_filter_inset_m must be finite and non-negative')
+        if self.self_filter_inset >= min(
+            self.vehicle_width,
+            self.vehicle_total_length,
+        ) / 2.0:
+            raise ValueError('self_filter_inset_m is too large for the vehicle')
+        if self.minimum_scan_points < 1:
+            raise ValueError('minimum_scan_points must be at least one')
 
     def raw_command_callback(self, msg: Twist):
         """储存上游控制器要求的速度。"""
 
-        self.raw_linear_x = float(msg.linear.x)
-        self.raw_angular_z = float(msg.angular.z)
+        linear_x = float(msg.linear.x)
+        angular_z = float(msg.angular.z)
+        self.raw_command_valid = all(
+            math.isfinite(value)
+            for value in (
+                linear_x,
+                float(msg.linear.y),
+                float(msg.linear.z),
+                float(msg.angular.x),
+                float(msg.angular.y),
+                angular_z,
+            )
+        )
+
+        if self.raw_command_valid:
+            self.raw_linear_x = linear_x
+            self.raw_angular_z = angular_z
+        else:
+            self.raw_linear_x = 0.0
+            self.raw_angular_z = 0.0
 
         self.last_command_time = (
             self.get_clock().now()
         )
+
+    def motion_mode_callback(self, msg: String):
+        """Store a validated mode heartbeat from the mission supervisor."""
+
+        requested_mode = msg.data.strip().upper()
+        if requested_mode == 'UTURN':
+            requested_mode = 'U_TURN'
+        if requested_mode not in {'STOP', 'LANE', 'U_TURN'}:
+            self.get_logger().warning(
+                f'Ignoring invalid motion mode: {requested_mode}'
+            )
+            return
+
+        self.motion_mode = requested_mode
+        self.last_mode_time = self.get_clock().now()
+
+    def scan_callback(self, msg: LaserScan):
+        """Measure minimum clearance from scan points to the robot rectangle."""
+
+        half_length = self.vehicle_total_length / 2.0
+        half_width = self.vehicle_width / 2.0
+        # Deliberately shrink, rather than expand, the ignored self-return
+        # box.  Expanding it would hide a real obstacle just outside the
+        # vehicle and defeat the hard-clearance threshold.
+        filter_half_length = max(0.0, half_length - self.self_filter_inset)
+        filter_half_width = max(0.0, half_width - self.self_filter_inset)
+
+        cos_offset = math.cos(self.lidar_yaw_offset)
+        sin_offset = math.sin(self.lidar_yaw_offset)
+        minimum_clearance = math.inf
+        valid_points = 0
+
+        angle = float(msg.angle_min)
+        angle_increment = float(msg.angle_increment)
+        range_min = float(msg.range_min)
+        range_max = min(
+            float(msg.range_max),
+            self.maximum_safety_scan_range,
+        )
+
+        for raw_range in msg.ranges:
+            measured_range = float(raw_range)
+            if (
+                math.isfinite(measured_range)
+                and range_min <= measured_range <= range_max
+            ):
+                x_lidar = measured_range * math.cos(angle)
+                y_lidar = measured_range * math.sin(angle)
+                x_base = (
+                    cos_offset * x_lidar
+                    - sin_offset * y_lidar
+                    + self.lidar_x_offset
+                )
+                y_base = (
+                    sin_offset * x_lidar
+                    + cos_offset * y_lidar
+                    + self.lidar_y_offset
+                )
+
+                # Ignore returns from the vehicle itself.  Obstacles outside
+                # this box are measured from the true vehicle footprint.
+                if not (
+                    abs(x_base) <= filter_half_length
+                    and abs(y_base) <= filter_half_width
+                ):
+                    dx = max(abs(x_base) - half_length, 0.0)
+                    dy = max(abs(y_base) - half_width, 0.0)
+                    clearance = math.hypot(dx, dy)
+                    minimum_clearance = min(
+                        minimum_clearance,
+                        clearance,
+                    )
+                    valid_points += 1
+
+            angle += angle_increment
+
+        self.minimum_scan_clearance = minimum_clearance
+        self.valid_scan_points = valid_points
+        self.scan_valid = (
+            valid_points >= self.minimum_scan_points
+            and math.isfinite(minimum_clearance)
+        )
+        self.last_scan_time = self.get_clock().now()
 
     def lane_geometry_callback(
         self,
@@ -394,7 +656,59 @@ class LevelAWallSafety(Node):
         )
 
     def control_callback(self):
-        """安全监督主循环。"""
+        """Select the safety policy for the active motion mode."""
+
+        if self.last_mode_time is None:
+            self.publish_stop(
+                'STOP: waiting for motion mode'
+            )
+            return
+
+        if self.elapsed_seconds(self.last_mode_time) > self.mode_timeout:
+            self.publish_stop(
+                'STOP: motion mode timeout'
+            )
+            return
+
+        if self.motion_mode == 'STOP':
+            self.publish_stop(
+                'STOP: motion mode is STOP',
+                emergency=False
+            )
+            return
+
+        if self.last_command_time is None:
+            self.publish_stop(
+                'STOP: waiting for raw command',
+                emergency=False
+            )
+            return
+
+        if self.elapsed_seconds(self.last_command_time) > self.command_timeout:
+            self.publish_stop(
+                'STOP: raw command timeout',
+                emergency=False
+            )
+            return
+
+        if not self.raw_command_valid:
+            self.publish_stop(
+                'STOP: raw command invalid'
+            )
+            return
+
+        if self.motion_mode == 'LANE':
+            self.control_lane_mode()
+            return
+
+        if self.motion_mode == 'U_TURN':
+            self.control_u_turn_mode()
+            return
+
+        self.publish_stop('STOP: unsupported motion mode')
+
+    def control_lane_mode(self):
+        """Apply the existing fitted-wall safety policy in an aisle."""
 
         # 没有收到墙面资料，保持停止
         if self.last_lane_time is None:
@@ -588,9 +902,76 @@ class LevelAWallSafety(Node):
         )
 
         self.publish_status(
-            'SAFE: '
+            'SAFE: mode=LANE '
             f'left_clearance={left_clearance:.3f} m, '
             f'right_clearance={right_clearance:.3f} m, '
+            f'scale={speed_scale:.2f}'
+        )
+
+    def control_u_turn_mode(self):
+        """Apply all-around LaserScan clearance protection during a U-turn."""
+
+        if self.last_scan_time is None:
+            self.publish_stop('STOP: waiting for safety scan')
+            return
+
+        if self.elapsed_seconds(self.last_scan_time) > self.scan_timeout:
+            self.publish_stop('STOP: safety scan timeout')
+            return
+
+        if not self.scan_valid:
+            self.publish_stop(
+                'STOP: safety scan invalid '
+                f'points={self.valid_scan_points}'
+            )
+            return
+
+        clearance = self.minimum_scan_clearance
+        if clearance <= self.u_turn_hard_clearance:
+            self.publish_stop(
+                'STOP: U-turn hard clearance violation '
+                f'clearance={clearance:.3f} m'
+            )
+            return
+
+        linear_x = self.clamp(
+            self.raw_linear_x,
+            -self.maximum_reverse_speed,
+            self.maximum_forward_speed
+        )
+        angular_z = self.clamp(
+            self.raw_angular_z,
+            -self.maximum_angular_speed,
+            self.maximum_angular_speed
+        )
+
+        speed_scale = 1.0
+        if clearance < self.u_turn_warning_clearance:
+            denominator = (
+                self.u_turn_warning_clearance
+                - self.u_turn_hard_clearance
+            )
+            speed_scale = self.clamp(
+                (clearance - self.u_turn_hard_clearance) / denominator,
+                0.0,
+                1.0
+            )
+            linear_x *= speed_scale
+            angular_z *= speed_scale
+
+        safe_command = Twist()
+        safe_command.linear.x = linear_x
+        safe_command.angular.z = angular_z
+        self.safe_cmd_pub.publish(safe_command)
+
+        emergency_msg = Bool()
+        emergency_msg.data = False
+        self.emergency_pub.publish(emergency_msg)
+
+        self.publish_status(
+            'SAFE: mode=U_TURN '
+            f'clearance={clearance:.3f} m, '
+            f'points={self.valid_scan_points}, '
             f'scale={speed_scale:.2f}'
         )
 

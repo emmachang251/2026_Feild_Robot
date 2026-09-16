@@ -80,6 +80,9 @@ setup(
         'dataset_capture = level_a.dataset_capture:main',
         'pig_detector = level_a.pig_detector:main',
         'manure_groove_detector = level_a.manure_groove_detector:main',
+        'level_a_mission = level_a.level_a_mission:main',
+        'level_a_motion_arbiter = level_a.level_a_motion_arbiter:main',
+        'u_turn_controller = level_a.u_turn_controller:main',
     ],
 },
 )

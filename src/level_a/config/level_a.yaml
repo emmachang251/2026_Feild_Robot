@@ -1,0 +1,254 @@
+# Level A shared parameters (non-manure primary mission).
+#
+# Values marked "LAB CALIBRATION" are conservative starting points. Verify
+# them with the wheels raised before allowing a powered floor test.
+
+lane_wall_detector:
+  ros__parameters:
+    scan_topic: /scan
+    output_topic: /level_a/lane_geometry
+
+    expected_lane_width_m: 0.75
+    lane_width_tolerance_m: 0.15
+
+    lidar_x_offset_m: 0.1375
+    lidar_y_offset_m: 0.0
+    lidar_yaw_offset_rad: 0.0
+
+    roi_x_min_m: 0.02
+    roi_x_max_m: 2.0
+    roi_min_abs_y_m: 0.12
+    roi_max_abs_y_m: 0.80
+    max_scan_range_m: 4.0
+
+    minimum_wall_points: 8
+    minimum_wall_x_span_m: 0.25
+    line_residual_threshold_m: 0.035
+    maximum_wall_rmse_m: 0.05
+    maximum_heading_deg: 35.0
+    minimum_wall_distance_m: 0.10
+    maximum_wall_distance_m: 0.80
+    ema_alpha: 0.25
+
+pig_detector:
+  ros__parameters:
+    model_path: /home/bme1234/rover_ws/models/best_ncnn_model
+    confidence_threshold: 0.80
+    iou_threshold: 0.50
+    image_size: 640
+    inference_hz: 2.0
+
+    color_topic: /camera/camera/color/image_raw
+    depth_topic: /camera/camera/aligned_depth_to_color/image_raw
+    camera_info_topic: /camera/camera/aligned_depth_to_color/camera_info
+
+    camera_x_m: 0.14425
+    camera_y_m: 0.033
+    camera_z_m: 0.410
+    camera_pitch_down_deg: 39.11
+    camera_yaw_deg: 0.0
+    camera_roll_deg: 0.0
+
+    depth_scale: 0.001
+    minimum_depth_m: 0.20
+    maximum_depth_m: 2.50
+    minimum_depth_pixels: 30
+    minimum_forward_m: 0.10
+    maximum_forward_m: 2.00
+    minimum_height_m: -0.15
+    maximum_height_m: 0.35
+
+    side_deadband_m: 0.05
+    history_size: 3
+    required_hits: 2
+    sensor_timeout_sec: 3.0
+    publish_debug_image: false
+
+level_a_mission:
+  ros__parameters:
+    avoid_start_distance: 0.60
+    next_pig_trigger_distance: 0.45
+    pig_missing_confirm_frames: 5
+    candidate_confirm_frames: 3
+    candidate_missing_tolerance_frames: 2
+    detection_timeout_sec: 1.50
+
+    active_match_min_iou: 0.10
+    active_match_max_center_ratio: 0.65
+    active_match_min_area_ratio: 0.40
+    active_match_max_area_ratio: 2.50
+
+lane_change_controller:
+  ros__parameters:
+    lane_geometry_topic: /level_a/lane_geometry
+    target_side_topic: /level_a/target_side
+    cmd_vel_raw_topic: /level_a/lane_cmd_vel
+    status_topic: /level_a/lane_change_status
+
+    control_rate_hz: 20.0
+    lane_timeout_s: 0.50
+
+    center_speed_mps: 0.060
+    side_speed_mps: 0.055
+    minimum_speed_mps: 0.025
+    side_wall_distance_m: 0.225
+
+    lateral_kp: 2.8
+    heading_kp: 1.4
+    max_angular_speed_rps: 0.35
+    target_slew_rate_mps: 0.075
+    heading_bias_rad: 0.050
+    angular_sign: 1.0
+
+    lateral_tolerance_m: 0.015
+    heading_tolerance_rad: 0.0523598776
+    settle_cycles: 10
+
+u_turn_controller:
+  ros__parameters:
+    odom_topic: /odom
+    lane_geometry_topic: /level_a/lane_geometry
+    enable_topic: /level_a/u_turn_enable
+    command_topic: /level_a/u_turn_cmd_vel
+    status_topic: /level_a/u_turn_status
+
+    turn_direction: LEFT
+    inner_wall_side: LEFT
+
+    control_rate_hz: 20.0
+    enable_timeout_sec: 0.75
+    odom_timeout_sec: 0.50
+    lane_timeout_sec: 0.50
+    input_wait_timeout_sec: 3.0
+    overall_timeout_sec: 35.0
+    approach_timeout_sec: 12.0
+    align_timeout_sec: 8.0
+
+    opening_confirm_frames: 5
+    minimum_approach_distance_m: 0.10
+    maximum_approach_distance_m: 1.50
+
+    # LAB CALIBRATION: distance needed for the rear of the robot to clear the
+    # divider before beginning the arc.
+    divider_clear_distance_m: 0.38
+    # LAB CALIBRATION: nominal half-spacing of the two 0.75 m aisles.
+    arc_radius_m: 0.375
+    arc_search_start_angle_rad: 2.70
+    maximum_turn_angle_rad: 3.60
+    maximum_odom_yaw_step_rad: 0.50
+
+    approach_speed_mps: 0.045
+    clear_speed_mps: 0.040
+    arc_speed_mps: 0.055
+    search_speed_mps: 0.035
+    align_speed_mps: 0.035
+    maximum_angular_speed_radps: 0.35
+
+    heading_bias_rad: 0.050
+    align_lateral_kp: 2.8
+    align_heading_kp: 1.4
+    align_lateral_tolerance_m: 0.025
+    align_heading_tolerance_rad: 0.0872664626
+    align_settle_cycles: 10
+    expected_lane_width_m: 0.75
+    lane_width_tolerance_m: 0.15
+
+level_a_motion_arbiter:
+  ros__parameters:
+    lane_cmd_topic: /level_a/lane_cmd_vel
+    u_turn_cmd_topic: /level_a/u_turn_cmd_vel
+    motion_mode_topic: /level_a/motion_mode
+    emergency_stop_topic: /level_a/emergency_stop
+    output_cmd_topic: /level_a/cmd_vel_raw
+    status_topic: /level_a/arbiter_status
+
+    control_rate_hz: 20.0
+    command_timeout_sec: 0.30
+    mode_timeout_sec: 0.75
+    emergency_timeout_sec: 0.75
+    switch_stop_duration_sec: 0.20
+
+    maximum_forward_speed_mps: 0.20
+    maximum_reverse_speed_mps: 0.0
+    maximum_angular_speed_radps: 0.80
+
+level_a_wall_safety:
+  ros__parameters:
+    raw_cmd_topic: /level_a/cmd_vel_raw
+    safe_cmd_topic: /cmd_vel
+    lane_geometry_topic: /level_a/lane_geometry
+    motion_mode_topic: /level_a/motion_mode
+    scan_topic: /scan
+
+    vehicle_width_m: 0.40
+    vehicle_total_length_m: 0.43
+
+    hard_clearance_m: 0.010
+    warning_clearance_m: 0.050
+    turn_block_clearance_m: 0.020
+
+    # LAB CALIBRATION: U-turn clearance is computed from raw LaserScan points
+    # to the rectangular vehicle footprint.
+    u_turn_hard_clearance_m: 0.030
+    u_turn_warning_clearance_m: 0.100
+    lidar_x_offset_m: 0.1375
+    lidar_y_offset_m: 0.0
+    lidar_yaw_offset_rad: 0.0
+    self_filter_inset_m: 0.015
+    maximum_safety_scan_range_m: 2.0
+    minimum_scan_points: 8
+
+    heading_bias_rad: 0.050
+    maximum_forward_speed_mps: 0.20
+    maximum_reverse_speed_mps: 0.0
+    maximum_angular_speed_radps: 0.80
+
+    lane_timeout_s: 0.50
+    command_timeout_s: 0.30
+    mode_timeout_s: 0.75
+    scan_timeout_s: 0.50
+    control_rate_hz: 20.0
+
+# Reserved for the later manure-aware version. The non-manure Level A launch
+# must not start this node.
+manure_groove_detector:
+  ros__parameters:
+    model_path: /home/bme1234/rover_ws/models/manure_best_ncnn_model
+    confidence_threshold: 0.80
+    iou_threshold: 0.50
+    image_size: 640
+    inference_hz: 2.0
+
+    color_topic: /camera/camera/color/image_raw
+    depth_topic: /camera/camera/aligned_depth_to_color/image_raw
+    camera_info_topic: /camera/camera/aligned_depth_to_color/camera_info
+
+    camera_x_m: 0.14425
+    camera_y_m: 0.033
+    camera_z_m: 0.410
+    camera_pitch_down_deg: 39.11
+    camera_yaw_deg: 0.0
+    camera_roll_deg: 0.0
+
+    depth_scale: 0.001
+    minimum_depth_m: 0.20
+    maximum_depth_m: 2.50
+    minimum_depth_pixels: 20
+    depth_roi_inset_ratio: 0.10
+    depth_sample_step: 2
+
+    minimum_forward_m: 0.10
+    maximum_forward_m: 1.20
+    maximum_abs_lateral_m: 0.80
+
+    minimum_ground_height_m: -0.08
+    maximum_ground_height_m: 0.12
+    minimum_ground_pixels: 15
+    minimum_ground_fraction: 0.30
+
+    side_deadband_m: 0.05
+    history_size: 3
+    required_hits: 2
+    maximum_history_spread_m: 0.20
+    sensor_timeout_sec: 3.0
+    publish_debug_image: false
