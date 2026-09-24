@@ -2,9 +2,9 @@ import cv2
 import numpy as np
 
 
-def is_green(image, contour):
+def get_green_ratio(image, contour):
     """
-    判斷一個物體是不是綠色。
+    計算一個物體裡面有多少比例是綠色。
 
     image:
         原始 BGR 影像
@@ -13,14 +13,19 @@ def is_green(image, contour):
         fruit_detector 找到的物體輪廓
 
     return:
-        True  = 綠色
-        False = 非綠色
+        green_ratio:
+            0.0 ~ 1.0
     """
 
-    # 建立一張和原圖一樣大的黑色 mask
-    object_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    # ========================================
+    # 1. 建立物體 mask
+    # ========================================
 
-    # 把目前這個物體的 contour 填滿成白色
+    object_mask = np.zeros(
+        image.shape[:2],
+        dtype=np.uint8
+    )
+
     cv2.drawContours(
         object_mask,
         [contour],
@@ -29,40 +34,68 @@ def is_green(image, contour):
         thickness=cv2.FILLED
     )
 
-    # BGR → HSV
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    # ========================================
+    # 2. BGR → HSV
+    # ========================================
 
-    # 綠色的 HSV 範圍
-    lower_green = np.array([35, 50, 40])
-    upper_green = np.array([85, 255, 255])
+    hsv = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2HSV
+    )
 
-    # 找出綠色像素
+    # ========================================
+    # 3. 綠色 HSV 範圍
+    # ========================================
+
+    lower_green = np.array([
+        35,
+        50,
+        40
+    ])
+
+    upper_green = np.array([
+        85,
+        255,
+        255
+    ])
+
+    # ========================================
+    # 4. 找綠色像素
+    # ========================================
+
     green_mask = cv2.inRange(
         hsv,
         lower_green,
         upper_green
     )
 
-    # 只保留「物體裡面的綠色」
+    # ========================================
+    # 5. 只保留物體裡面的綠色
+    # ========================================
+
     green_pixels = cv2.bitwise_and(
         green_mask,
         object_mask
     )
 
-    # 計算物體總像素數
-    object_pixels = cv2.countNonZero(object_mask)
+    # ========================================
+    # 6. 計算比例
+    # ========================================
 
-    # 計算物體裡面綠色像素數
-    green_pixel_count = cv2.countNonZero(green_pixels)
+    object_pixels = cv2.countNonZero(
+        object_mask
+    )
 
-    # 避免除以 0
+    green_pixel_count = cv2.countNonZero(
+        green_pixels
+    )
+
     if object_pixels == 0:
-        return False
+        return 0.0
 
-    # 綠色比例
-    green_ratio = green_pixel_count / object_pixels
+    green_ratio = (
+        green_pixel_count /
+        object_pixels
+    )
 
-    print(f"Green ratio: {green_ratio:.2f}")
-
-    # 如果超過 40% 是綠色，就判定為綠色
-    return green_ratio > 0.40
+    return green_ratio

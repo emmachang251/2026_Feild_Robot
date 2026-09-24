@@ -10,12 +10,13 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', ['launch/level_c.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='bme1234',
     maintainer_email='emma20041005@gmail.com',
-    description='TODO: Package description',
+    description='Level C fruit detection and mission',
     license='TODO: License declaration',
     extras_require={
         'test': [
@@ -25,6 +26,7 @@ setup(
     entry_points={
         'console_scripts': [
             'fruit_detector = level_c.fruit_detector:main',
+            'level_c_mission = level_c.level_c_mission:main',
         ],
     },
 )
